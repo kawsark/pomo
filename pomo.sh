@@ -41,11 +41,70 @@ fi
 
 #--- Pomodoro functions ---
 
+function touch_day_file {
+    day=$(date +'%Y-%m-%d')
+    day_path="$TASK_DIR/${day}.day"
+    if [[ ! -e  $day_path ]]; then
+	rm -f $TASK_DIR/*.day
+	touch $day_path
+	tasks=$(ls $TASK_DIR/*.task)
+	for t in $tasks
+	do
+          printf "\n%s:" $day >> $t
+	done
+    fi	
+}
+
+function touch_track_file {
+   if [[ -e ${TASK_FILE} ]]; then 
+     export task=$(cat ${TASK_FILE})
+     export track_file=$TASK_DIR/"$(echo $task | sed -e s/' '/'-'/g).task" && touch $track_file
+
+     # Insert daystamp if it does not exist already
+     day=$(date +'%Y-%m-%d')
+     d=$(grep ${day} $track_file)
+     if [[ -z $d ]]; then
+        printf "\n%s:" $day >> $track_file
+     fi
+   fi
+}
+
+function increment_track_file {
+   [[ -e ${TASK_FILE} ]] && touch_track_file && printf %s "*" >> $track_file
+}
+
+function increment_track_file_partial {
+   [[ -e ${TASK_FILE} ]] && touch_track_file && printf %s "-" >> $track_file
+}
+
 function pomo_start {
     # Start new pomo block (work+break cycle).
-    test -e "$(dirname -- "$POMO")" || mkdir "$(dirname -- "$POMO")"
+    test -e "$(dirname -- "$POMO")" || mkdir -p "$(dirname -- "$POMO")"
     :> "$POMO" # remove saved time stamp due to a pause.
     touch "$POMO"
+    
+    # If a task is provided then log it in the current task file
+    if [[ ! -z "$TASK" ]]; then
+       touch "${TASK_FILE}" && echo $TASK > ${TASK_FILE}
+       touch_track_file
+    fi
+
+    # Print the active task
+    print_current_task
+
+    # Update date timestamp
+    #touch_day_file
+}
+
+function print_current_task {
+    task=""
+    if [[ -f "${TASK_FILE}" ]]; then
+       task="$(cat ${TASK_FILE})"
+    else
+       task="No task set"
+    fi
+
+    echo "Current task: $task"
 }
 
 function pomo_isstopped {
@@ -58,6 +117,7 @@ function pomo_isstopped {
 function pomo_stop {
     # Stop pomo cycles.
     rm -f "$POMO"
+    [[ -e ${TASK_FILE} ]] && increment_track_file_partial
 }
 
 function pomo_stamp {
@@ -134,9 +194,11 @@ function pomo_clock {
 }
 
 function pomo_status {
+    print_current_task
+
     while true; do
         pomo_clock
-        sleep 1
+        sleep 60
     done
 }
 
@@ -168,12 +230,42 @@ function pomo_msg {
     done
     if [[ $(( stat - running - left )) -le 1 ]]; then
         if $work; then
+            increment_track_file
             $MSG_CALLBACK 0  # end of work block
         else
             $MSG_CALLBACK 1  # end of break block
         fi
     fi
     return 0
+}
+
+function pomo_log {
+  echo "Task Directory: ${TASK_DIR}. Displaying allo log entries"
+  echo "--"
+  cat ${TASK_DIR}/*.task
+}
+
+function pomo_day {
+  echo "Task Directory: ${TASK_DIR}. Displaying log entries from today."
+  echo "--"
+  day=$(date +'%Y-%m-%d')
+  grep $day ${TASK_DIR}/*.task
+}
+
+
+function pomo_task {
+  if [[ ! -z "$TASK" ]]; then
+    [[ -f ${TASK_FILE} ]] && echo "Previous task: $(cat ${TASK_FILE})" && increment_track_file_partial && rm -f "${TASK_FILE}"
+    echo "Current task: $TASK"
+    touch ${TASK_FILE} && echo $TASK > ${TASK_FILE}
+    touch_track_file
+  else
+    if [[ -f ${TASK_FILE} ]]; then
+       echo "Current task: $(cat ${TASK_FILE})"
+    else
+       echo "No current task"
+    fi
+  fi
 }
 
 function pomo_notify {
@@ -216,7 +308,7 @@ function send_msg {
 function pomo_usage {
     # Print out usage message.
     cat <<END
-pomo.sh [-h] [-c file] [start | stop | pause | clock | status | notify | usage]
+pomo.sh [-h] [-c file] [start | stop | pause | clock | status | notify | usage | log | day | task]
 
 pomo.sh - a simple Pomodoro timer.
 
@@ -230,7 +322,8 @@ Options:
 Actions:
 
 start
-    Start Pomodoro timer.
+    Start Pomodoro timer. 
+    Optionally provide a task name. E.g. pomo.sh start training
 stop
     Stop Pomodoro timer.
 pause
@@ -246,6 +339,12 @@ notify
 status
     Continuously print the current status of the Pomodoro timer once a second,
     in the same format as the clock action.
+log
+    Prints tasks that were logged
+day
+    Same as log but print today's entries only
+task
+    Changes the current task
 usage
     Print this usage message.
 
@@ -290,10 +389,11 @@ while getopts "hc:" arg; do
 done
 shift $((OPTIND-1))
 
-actions="start stop pause clock usage notify status"
+actions="start stop pause clock usage notify status log day task"
 for act in $actions; do
     if [[ $act == "$1" ]]; then
         action=$act
+        [[ ! -z "$2" ]] && export TASK=$2
         break
     fi
 done
@@ -305,6 +405,8 @@ POMO=${POMO_FILE:-"$HOME/.local/share/pomo"}
 WORK_TIME=${POMO_WORK_TIME:-25}
 BREAK_TIME=${POMO_BREAK_TIME:-5}
 MSG_CALLBACK=${POMO_MSG_CALLBACK:-pomo_msg_callback}
+TASK_DIR=$HOME/.local/share
+TASK_FILE=${TASK_DIR}/pomo_task.txt
 
 #--- Run! ---
 
