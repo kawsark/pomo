@@ -41,41 +41,50 @@ fi
 
 #--- Pomodoro functions ---
 
-# Set the variable track_file_path based on current task name
+# Set the variable track_file_path based on current task name or $TASK
 function set_track_file_path {
     unset track_file_path
-    if [[ -e ${TASK_FILE} ]]; then 
-        task=$(cat ${TASK_FILE})
-        [[ ! -z $task ]] && export track_file_path="${TASK_DIR}/$(echo $task | md5sum | awk '{print $1}').task"
+
+    if [[ ! -z $TASK ]]; then
+       export task=$TASK
+    else
+       [[ -e ${TASK_FILE} ]] && export task=$(cat ${TASK_FILE})
     fi
+
+    [[ ! -z $task ]] && export track_file_path="${TASK_DIR}/$(echo $task | md5sum | awk '{print $1}').task"
 }
 
 
 function touch_track_file {
-    set_track_file_path
+   set_track_file_path
 
    if [[ ! -z  ${track_file_path} ]]; then 
     
-    # If the track file does not exist, then create it and write the task name
-    [[ ! -e ${track_file_path} ]] && task=$(cat ${TASK_FILE}) && echo ${task} > ${track_file_path}
+      # If the track file does not exist, then create it and write the task name
+      # task name is also set upstream
+      [[ ! -e ${track_file_path} ]] && echo ${task} > ${track_file_path}
 
-    touch ${track_file_path}
+      touch ${track_file_path}
 
-     # Insert daystamp if it does not exist already
-     day=$(date +'%Y-%m-%d')
-     d=$(grep ${day} ${track_file_path})
-     if [[ -z $d ]]; then
-        printf "\n%s:" $day >> ${track_file_path}
-     fi
+       # Insert daystamp if it does not exist already
+       day=$(date +'%Y-%m-%d')
+       d=$(grep ${day} ${track_file_path})
+       if [[ -z $d ]]; then
+          printf "\n%s:" $day >> ${track_file_path}
+       fi
    fi
 }
 
 function increment_track_file {
-   touch_track_file && [[ ! -z  ${track_file_path} ]] && printf %s "*" >> ${track_file_path}
+  [[ -z ${work_time} ]] && work_time=$WORK_TIME  
+ 
+  touch_track_file && [[ ! -z  ${track_file_path} ]] && printf " %s" "${work_time}" >> ${track_file_path}
 }
 
 function increment_track_file_partial {
-   touch_track_file && [[ ! -z  ${track_file_path} ]] && printf %s "-" >> ${track_file_path}
+   running=$(pomo_stat)
+   m=$((running/60))
+   [[ ${m} != "0" ]] && touch_track_file && [[ ! -z  ${track_file_path} ]] && printf " %s" "${m}" >> ${track_file_path}
 }
 
 function pomo_start {
@@ -89,6 +98,10 @@ function pomo_start {
 
 }
 
+function pomo_add {
+  [[ ! -z "$TASK" ]] && increment_track_file
+}
+
 function pomo_task {
   if [[ ! -z "$TASK" ]]; then
     [[ -f ${TASK_FILE} ]] && increment_track_file_partial && rm -f "${TASK_FILE}"
@@ -99,24 +112,29 @@ function pomo_task {
   print_current_task
 }
 
+function get_current_task {
+  current_task=""
+  if [[ -f "${TASK_FILE}" ]]; then
+     current_task="$(cat ${TASK_FILE})"
+  else
+     current_task="No task set"
+  fi
+}
+
 function print_current_task {
-    task=""
+    get_current_task
+    result="${current_task}"
+
     if [[ -f "${TASK_FILE}" ]]; then
-       task="$(cat ${TASK_FILE})"
        set_track_file_path
        if [[ ! -z ${track_file_path} ]]; then
-         day=$(date +'%Y-%m-%d')
-         stars=$(grep $day ${track_file_path} | awk -F';' '{print $NF}')
-         current_task="${task}: ${stars}"
-       else
-         current_task=$task
+         day="$(date +'%Y-%m-%d')"
+         stars="$(grep ${day} ${track_file_path} | awk -F';' '{print $NF}')"
+	     printf -v result "%s\n%s\n" "${current_task}" "${stars}"
        fi
-    else
-       current_task="No task set"
     fi
 
-    echo "Current task: $current_task"
-
+    echo "${result}"
 }
 
 function pomo_isstopped {
@@ -127,8 +145,9 @@ function pomo_isstopped {
 }
 
 function pomo_stop {
-    # Increment partial if in the middle of a work block
     pomo_clock
+
+    # Increment partial if in the middle of a work block
     [[ -e ${TASK_FILE} ]] && [[ $prefix == "W" ]] && increment_track_file_partial
 
     # Stop pomo cycles.
@@ -157,6 +176,7 @@ function pomo_pause {
         # Restart a stopped/paused pomo block by updating the time stamp of the POMO
         # file.
         pomo_stamp "$running"
+	echo "resumed"
     else
         # Pause a pomo block.
         echo "$running" > "$POMO"
@@ -202,18 +222,20 @@ function pomo_clock {
         pomo_ispaused && prefix=P$prefix
         min=$(( left / 60 ))
         sec=$(( left - 60*min ))
-        printf "%2s%02d:%02d\n" $prefix $min $sec
+
+        get_current_task
+        printf -v clock "%2s%02d:%02d - %s" $prefix $min $sec "${current_task}"
     else
-        printf "  --:--\n"
+        printf -v clock "  --:--"
     fi
+
+    echo "${clock}"
 }
 
 function pomo_status {
-    print_current_task
-
     while true; do
         pomo_clock
-        sleep 60
+        sleep 300
     done
 }
 
@@ -255,7 +277,7 @@ function pomo_msg {
 }
 
 function pomo_log {
-  echo "Task Directory: ${TASK_DIR}. Displaying allo log entries"
+  echo "Task Directory: ${TASK_DIR}. Displaying all log entries"
   echo "--"
   tasks=$(ls ${TASK_DIR}/*.task)
   for t in $tasks
@@ -275,7 +297,21 @@ function pomo_day {
     r=$(grep $day $t)
     if [[ ! -z $r ]]; then
       printf "%s\n" "--"
-      head -n 1 $t
+      printf "%s (%s)\n" "$(head -n 1 $t)" "$t"
+      echo $r
+    fi
+  done
+}
+
+function pomo_search {
+  echo "Searching task Directory: ${TASK_DIR} for task $TASK"
+  tasks=$(ls ${TASK_DIR}/*.task)
+  for t in $tasks
+  do
+    r=$(grep -i $TASK $t)
+    if [[ ! -z $r ]]; then
+      printf "%s\n" "--"
+      printf "%s (%s)\n" "$(head -n 1 $t)" "$t"
       echo $r
     fi
   done
@@ -306,6 +342,17 @@ function pomo_msg_callback {
     send_msg "$msg"
 }
 
+# This function will send an audible notification via a MacOS system sound
+function pomo_macos_notify {
+
+    # Play a sound if macos
+    [[ $(uname) == "Darwin" ]] && afplay /System/Library/Sounds/Glass.aiff
+
+    # Print messages
+    printf '~~~\n%s\n~~~\n%s\n~~~\n%s\n~~~\n' "$(fortune)" "$(python3 /Users/kawsark/tools/wisdom.py)" "$($HOME/tools/ticker.sh)"
+}
+
+
 function pomo_msg_callback_echo {
     block_type=$1
     if [[ $block_type -eq 0 ]]; then
@@ -319,8 +366,21 @@ function pomo_msg_callback_echo {
     echo "$msg"
     print_current_task
 
-    # Play a sound if macos
-    [[ $(uname) == "Darwin" ]] && afplay /System/Library/Sounds/Glass.aiff
+    pomo_macos_notify
+}
+
+# This function will stop the current task once end of a work period is reached
+function pomo_msg_callback_auto_stop {
+    block_type=$1
+    if [[ $block_type -eq 0 ]]; then
+        msg="End of a work period. Auto stopping current task: Time $(date +%T)"
+        print_current_task
+        pomo_macos_notify
+        pomo_stop
+    else
+        msg='Previous task was auto stopped'
+    fi
+    echo "$msg"
 }
 
 function send_msg {
@@ -338,7 +398,7 @@ function send_msg {
 function pomo_usage {
     # Print out usage message.
     cat <<END
-pomo.sh [-h] [-c file] [start | stop | pause | clock | status | notify | usage | log | day | task]
+pomo.sh [-h] [-c file] [start | stop | pause | clock | status | notify | usage | log | day | add | task | search]
 
 pomo.sh - a simple Pomodoro timer.
 
@@ -370,13 +430,17 @@ status
     Continuously print the current status of the Pomodoro timer once a second,
     in the same format as the clock action.
 log
-    Prints tasks that were logged
+    Prints all tasks that were logged
 day
     Same as log but print today's entries only
+add
+    Adds a work block to specified task
 task
     Changes the current task
 usage
     Print this usage message.
+search
+    Look for a previous task name
 
 Note that the notify and status actions (unlike all others) do not terminate and
 are best run in the background.
@@ -419,11 +483,12 @@ while getopts "hc:" arg; do
 done
 shift $((OPTIND-1))
 
-actions="start stop pause clock usage notify status log day task"
+actions="start stop pause clock usage notify status log day add task search"
 for act in $actions; do
     if [[ $act == "$1" ]]; then
         action=$act
         [[ ! -z "$2" ]] && export TASK=$2
+        [[ ! -z "$3" ]] && [[ $act == "add" ]] && export work_time=$3
         break
     fi
 done
